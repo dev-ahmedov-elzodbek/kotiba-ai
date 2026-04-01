@@ -8,7 +8,7 @@ import {
   Wallet, Star, Coffee, ShoppingCart,
   Car, Heart, Book, Wifi, Gift, Package, ChevronDown,
   CheckCircle, AlertTriangle,
-  Bot, Sparkles, ArrowUpRight, ArrowDownRight
+  Bot, Sparkles, ArrowUpRight, ArrowDownRight, BookOpen, HelpCircle
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis,
@@ -233,11 +233,12 @@ function TypeWriter({ text, speed=35, onDone }) {
 // ═══════════════════════════════════════════════════
 function BottomNav({ active, onChange, theme }) {
   const items = [
-    { key:"home",      icon:<Home size={22}/>,       label:"Bosh"    },
-    { key:"reminders", icon:<Bell size={22}/>,       label:"Eslatma" },
-    { key:"finance",   icon:<DollarSign size={22}/>, label:"Moliya"  },
-    { key:"tasks",     icon:<CheckSquare size={22}/>,label:"Vazifa"  },
-    { key:"settings",  icon:<Settings size={22}/>,   label:"Sozlama" },
+    { key:"home",      icon:<Home size={20}/>,        label:"Bosh"    },
+    { key:"reminders", icon:<Bell size={20}/>,        label:"Eslatma" },
+    { key:"finance",   icon:<DollarSign size={20}/>,  label:"Moliya"  },
+    { key:"tasks",     icon:<CheckSquare size={20}/>, label:"Vazifa"  },
+    { key:"guide",     icon:<BookOpen size={20}/>,    label:"Yordam"  },
+    { key:"settings",  icon:<Settings size={20}/>,    label:"Sozlama" },
   ];
   return (
     <nav style={{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)",
@@ -1501,54 +1502,338 @@ function SettingsScreen({ theme, user, onLogout }) {
 }
 
 // ═══════════════════════════════════════════════════
-// VOICE MODAL
+// VOICE MODAL — real Web Speech API + Groq AI
 // ═══════════════════════════════════════════════════
-function VoiceModal({ theme, onClose, onResult }) {
-  const [state, setState] = useState("idle");
+function VoiceModal({ theme, onClose, onCommand }) {
+  const [state, setState]         = useState("idle");
   const [transcript, setTranscript] = useState("");
+  const [error, setError]         = useState("");
+  const recognitionRef            = useRef(null);
+
+  const stop = () => {
+    recognitionRef.current?.stop();
+  };
 
   const start = () => {
-    setState("recording");
-    setTimeout(()=>{
-      setState("processing");
-      setTimeout(()=>{ setTranscript("Ertaga soat 10 da doktorga borish kerak"); setState("done"); },1200);
-    },2500);
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setError("Brauzeringiz ovoz tanishni qo'llab-quvvatlamaydi. Chrome yoki Edge ishlating.");
+      return;
+    }
+    setError(""); setTranscript("");
+    const rec = new SR();
+    rec.lang            = "ru-RU";
+    rec.continuous      = false;
+    rec.interimResults  = true;
+    rec.maxAlternatives = 1;
+
+    rec.onstart  = () => setState("recording");
+    rec.onresult = e => {
+      const t = Array.from(e.results).map(r => r[0].transcript).join("");
+      setTranscript(t);
+      if (e.results[e.results.length - 1].isFinal) {
+        setState("processing");
+        rec.stop();
+      }
+    };
+    rec.onerror = ev => {
+      if (ev.error === "no-speech") setError("Ovoz eshitilmadi. Qaytadan urinib ko'ring.");
+      else setError("Xato: " + ev.error);
+      setState("idle");
+    };
+    rec.onend = () => {
+      if (state === "recording") setState("idle");
+    };
+    recognitionRef.current = rec;
+    rec.start();
   };
+
+  // When transcript is final — send to Groq
+  useEffect(() => {
+    if (state !== "processing" || !transcript) return;
+    const today = new Date().toISOString().split("T")[0];
+    const prompt = `Foydalanuvchi ovoz buyrug'i: "${transcript}"
+
+Quyidagi JSON formatida qaytaring (boshqa hech narsa yozmang):
+{
+  "action": "navigate" | "add_task" | "add_reminder" | "add_finance" | "query",
+  "screen": "home" | "reminders" | "finance" | "tasks" | "settings" | "guide" | "ai-chat",
+  "text": "vazifa yoki eslatma matni",
+  "date": "YYYY-MM-DD yoki null",
+  "time": "HH:MM yoki null",
+  "type": "income" | "expense",
+  "amount": 0,
+  "category": "food|trans|utility|clothes|health|edu|fun|other|salary|biz|debt|bonus",
+  "note": "izoh",
+  "reply": "foydalanuvchiga qisqa javob o'zbek tilida"
+}
+
+Bugun: ${today}. Navigatsiya so'zlari: bosh/home, eslatma/reminders, moliya/finance, vazifa/tasks, sozlama/settings, yordam/guide. Misollar:
+- "Vazifa qo'sh: hisobot yozish" → add_task
+- "Eslatma qo'sh ertaga soat 3 da uchrashuv" → add_reminder  
+- "200 ming so'm kirim qo'sh maosh" → add_finance income
+- "Moliya ekraniga o't" → navigate finance
+- "Bugungi balansim qancha?" → query`;
+
+    fetch("/groq/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama3-8b-8192",
+        max_tokens: 300,
+        messages: [{ role: "user", content: prompt }]
+      })
+    })
+      .then(r => r.json())
+      .then(d => {
+        const raw = d.choices?.[0]?.message?.content || "{}";
+        const clean = raw.replace(/```json|```/g, "").trim();
+        const parsed = JSON.parse(clean);
+        onCommand(parsed, transcript);
+        setState("done");
+        setTranscript(parsed.reply || transcript);
+      })
+      .catch(() => {
+        setError("Tarmoq xatosi. Internetni tekshiring.");
+        setState("idle");
+      });
+  // eslint-disable-next-line
+  }, [state]);
+
+  const stateColor = state === "recording" ? C.red : C.orange;
 
   return (
     <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:200,
       display:"flex",alignItems:"flex-end",justifyContent:"center" }}>
       <div style={{ width:"100%",maxWidth:430,background:theme.card,
-        borderRadius:"24px 24px 0 0",padding:"20px 24px 44px",
-        animation:"slideUp 0.3s ease" }}>
+        borderRadius:"24px 24px 0 0",padding:"20px 24px 44px",animation:"slideUp 0.3s ease" }}>
         <div style={{ width:36,height:4,borderRadius:2,background:theme.border,margin:"0 auto 20px" }}/>
-        <h3 style={{ textAlign:"center",color:theme.text,fontWeight:700,fontSize:17,margin:"0 0 22px" }}>Ovozli buyruq</h3>
+        <h3 style={{ textAlign:"center",color:theme.text,fontWeight:700,fontSize:17,margin:"0 0 6px" }}>
+          🎙 Ovozli buyruq
+        </h3>
+        <p style={{ textAlign:"center",color:theme.text2,fontSize:12,margin:"0 0 20px" }}>
+          O'zbek yoki rus tilida gapiring
+        </p>
         <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:18 }}>
-          <div style={{ width:88,height:88,borderRadius:44,
-            background:state==="recording"?`${C.red}20`:`${C.orange}20`,
-            display:"flex",alignItems:"center",justifyContent:"center",
+          {/* mic circle */}
+          <div style={{ width:96,height:96,borderRadius:48,
+            background:`${stateColor}18`,display:"flex",alignItems:"center",justifyContent:"center",
             animation:state==="recording"?"pulse 1s ease-in-out infinite":"none",
-            border:`3px solid ${state==="recording"?C.red:C.orange}` }}>
-            {state==="recording"?<MicOff size={36} color={C.red}/>:<Mic size={36} color={C.orange}/>}
+            border:`3px solid ${stateColor}`,transition:"all 0.3s" }}>
+            {state==="recording"
+              ? <MicOff size={38} color={C.red}/>
+              : state==="processing"
+                ? <div style={{ width:28,height:28,borderRadius:14,border:`3px solid ${C.orange}`,
+                    borderTopColor:"transparent",animation:"spin 0.8s linear infinite" }}/>
+                : <Mic size={38} color={C.orange}/>
+            }
           </div>
-          <p style={{ color:theme.text2,fontSize:14,textAlign:"center" }}>
-            {state==="idle"?"Tugmani bosing va gapiring":
-             state==="recording"?"🔴 Yozilmoqda...":
-             state==="processing"?"Tahlil qilinmoqda...":transcript}
+
+          {/* status text */}
+          <p style={{ color:theme.text2,fontSize:14,textAlign:"center",minHeight:40,
+            padding:"0 16px",lineHeight:1.5 }}>
+            {error ? <span style={{ color:C.red }}>{error}</span>
+             : state==="idle"     ? "Tugmani bosing va gapiring"
+             : state==="recording"? "🔴 Eshityapman... (to'xtatish uchun qayta bosing)"
+             : state==="processing"? "🤖 AI tahlil qilmoqda..."
+             : <span style={{ color:C.green }}>✅ {transcript}</span>}
           </p>
-          {state==="idle"&&<Btn onClick={start} color={C.orange}>🎙 Yozishni boshlash</Btn>}
-          {state==="done"&&(
-            <div style={{ width:"100%",display:"flex",flexDirection:"column",gap:8 }}>
-              <Btn onClick={()=>{onResult(transcript);onClose();}} color={C.green}>✅ Qabul qilish</Btn>
-              <Btn onClick={()=>setState("idle")} outline color={C.orange}>Qaytadan</Btn>
+
+          {/* transcript preview while recording */}
+          {state==="recording" && transcript && (
+            <div style={{ width:"100%",background:theme.card2,borderRadius:12,padding:"10px 14px" }}>
+              <p style={{ color:theme.text,fontSize:14,margin:0 }}>{transcript}</p>
             </div>
           )}
-          <button onClick={onClose} style={{ background:"none",border:"none",color:theme.text2,cursor:"pointer",fontSize:14 }}>
-            Yopish
+
+          {/* buttons */}
+          {(state==="idle"||state==="done") && (
+            <Btn onClick={start} color={C.orange}>
+              {state==="done" ? "🔄 Qaytadan" : "🎙 Yozishni boshlash"}
+            </Btn>
+          )}
+          {state==="recording" && (
+            <Btn onClick={stop} color={C.red}>⏹ To'xtatish</Btn>
+          )}
+          {state==="done" && (
+            <Btn onClick={onClose} color={C.green}>✅ Yopish</Btn>
+          )}
+          <button onClick={()=>{ stop(); onClose(); }}
+            style={{ background:"none",border:"none",color:theme.text2,cursor:"pointer",fontSize:14 }}>
+            Bekor qilish
           </button>
         </div>
+
+        {/* quick commands hint */}
+        {state==="idle" && (
+          <div style={{ marginTop:20,background:theme.card2,borderRadius:14,padding:"12px 14px" }}>
+            <p style={{ color:theme.text2,fontSize:11,margin:"0 0 8px",fontWeight:600 }}>MISOL BUYRUQLAR:</p>
+            {[
+              "Vazifa qo'sh: hisobot yozish",
+              "Moliya ekraniga o't",
+              "200 ming so'm kirim qo'sh",
+              "Eslatma: soat 3 da uchrashuv",
+            ].map((ex,i) => (
+              <p key={i} style={{ color:theme.text,fontSize:12,margin:"4px 0",
+                padding:"4px 8px",background:theme.bg,borderRadius:8 }}>
+                💬 "{ex}"
+              </p>
+            ))}
+          </div>
+        )}
       </div>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// GUIDE SCREEN — Yo'riqnoma
+// ═══════════════════════════════════════════════════
+function GuideScreen({ theme }) {
+  const sections = [
+    {
+      icon:"🎙", title:"Ovozli buyruqlar",
+      color: C.orange,
+      items:[
+        { cmd:"Vazifa qo'sh: [matn]",       desc:"Yangi vazifa qo'shadi" },
+        { cmd:"Eslatma: [matn]",             desc:"Eslatma yaratadi" },
+        { cmd:"[miqdor] so'm kirim qo'sh",   desc:"Daromad qo'shadi" },
+        { cmd:"[miqdor] so'm chiqim qo'sh",  desc:"Xarajat qo'shadi" },
+        { cmd:"[ekran nomi] ekraniga o't",   desc:"Ekran almashtiradi" },
+        { cmd:"Bugungi balansim qancha?",     desc:"AI javob beradi" },
+      ]
+    },
+    {
+      icon:"📋", title:"Vazifalar",
+      color: C.blue,
+      items:[
+        { cmd:"+ Yangi vazifa",   desc:"Qo'shish tugmasi orqali yangi vazifa" },
+        { cmd:"✅ belgisi",       desc:"Vazifani bajarilgan deb belgilash" },
+        { cmd:"🗑 tugmasi",      desc:"Vazifani o'chirish" },
+        { cmd:"Muddatni tanlash", desc:"Sanani belgilang" },
+      ]
+    },
+    {
+      icon:"💰", title:"Moliya",
+      color: C.green,
+      items:[
+        { cmd:"Kirim / Chiqim",    desc:"Tranzaksiya turini tanlang" },
+        { cmd:"Kategoriya",        desc:"Oziq-ovqat, transport va h.k." },
+        { cmd:"UZS / USD",         desc:"Valyutani tanlash imkoniyati" },
+        { cmd:"Grafik",            desc:"Oylik xarajatlar diagrammasi" },
+      ]
+    },
+    {
+      icon:"🔔", title:"Eslatmalar",
+      color: C.purple,
+      items:[
+        { cmd:"Sana va vaqt",      desc:"Eslatma vaqtini belgilang" },
+        { cmd:"Takrorlanish",      desc:"Har kuni / hafta / oy" },
+        { cmd:"Bildirishnoma",     desc:"Push yoki SMS" },
+      ]
+    },
+    {
+      icon:"🤖", title:"AI Yordamchi",
+      color: C.blue,
+      items:[
+        { cmd:"AI Chat",           desc:"Istalgan savol bering" },
+        { cmd:"Moliyaviy maslahat",desc:"Xarajatlaringizni tahlil qiladi" },
+        { cmd:"Reja",              desc:"Oylik byudjet rejasi" },
+      ]
+    },
+    {
+      icon:"⚙️", title:"Sozlamalar",
+      color: C.textSecondary,
+      items:[
+        { cmd:"PIN kod",           desc:"Xavfsizlik uchun PIN o'rnating" },
+        { cmd:"Mavzu",             desc:"Qorong'u / Yorug' rejim" },
+        { cmd:"Chiqish",           desc:"Hisobdan chiqish" },
+      ]
+    },
+  ];
+
+  return (
+    <Screen theme={theme}>
+      <div style={{ padding:"60px 20px 100px" }}>
+        {/* header */}
+        <div style={{ textAlign:"center",marginBottom:28 }}>
+          <div style={{ fontSize:48,marginBottom:8 }}>📖</div>
+          <h1 style={{ fontSize:24,fontWeight:800,color:theme.text,margin:"0 0 8px" }}>
+            Kotiba AI Yo'riqnoma
+          </h1>
+          <p style={{ color:theme.text2,fontSize:14,lineHeight:1.5 }}>
+            Ilovadan to'g'ri foydalanish uchun quyidagi qo'llanmani o'qing
+          </p>
+        </div>
+
+        {/* PWA install tip */}
+        <div style={{ background:`${C.orange}15`,border:`1px solid ${C.orange}40`,
+          borderRadius:16,padding:"14px 16px",marginBottom:20,
+          display:"flex",gap:12,alignItems:"flex-start" }}>
+          <span style={{ fontSize:22 }}>📱</span>
+          <div>
+            <p style={{ color:C.orange,fontWeight:700,fontSize:13,margin:"0 0 4px" }}>
+              Telefonga o'rnatish
+            </p>
+            <p style={{ color:theme.text2,fontSize:12,margin:0,lineHeight:1.5 }}>
+              Chrome → ⋮ menyu → "Bosh ekranga qo'shish" — ilovani telefon ilovasi sifatida ishlatishingiz mumkin
+            </p>
+          </div>
+        </div>
+
+        {/* voice tip */}
+        <div style={{ background:`${C.green}15`,border:`1px solid ${C.green}40`,
+          borderRadius:16,padding:"14px 16px",marginBottom:24,
+          display:"flex",gap:12,alignItems:"flex-start" }}>
+          <span style={{ fontSize:22 }}>🎙</span>
+          <div>
+            <p style={{ color:C.green,fontWeight:700,fontSize:13,margin:"0 0 4px" }}>
+              Ovozli boshqaruv
+            </p>
+            <p style={{ color:theme.text2,fontSize:12,margin:0,lineHeight:1.5 }}>
+              Bosh ekrandagi sariq mikrofon tugmasini bosing va o'zbek tilida buyruq bering. AI buyruqni tushunib, kerakli amalni bajaradi.
+            </p>
+          </div>
+        </div>
+
+        {/* sections */}
+        {sections.map((sec,si) => (
+          <div key={si} style={{ marginBottom:20 }}>
+            <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12 }}>
+              <div style={{ width:36,height:36,borderRadius:10,background:`${sec.color}20`,
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:18 }}>
+                {sec.icon}
+              </div>
+              <h2 style={{ fontSize:16,fontWeight:700,color:theme.text,margin:0 }}>{sec.title}</h2>
+            </div>
+            <div style={{ background:theme.card,borderRadius:16,overflow:"hidden",
+              border:`1px solid ${theme.border}` }}>
+              {sec.items.map((item,ii) => (
+                <div key={ii} style={{ padding:"12px 16px",
+                  borderBottom:ii<sec.items.length-1?`1px solid ${theme.border}`:"none",
+                  display:"flex",justifyContent:"space-between",alignItems:"center",gap:12 }}>
+                  <span style={{ fontSize:13,fontWeight:600,color:sec.color,flex:"0 0 auto",
+                    background:`${sec.color}15`,padding:"4px 10px",borderRadius:8 }}>
+                    {item.cmd}
+                  </span>
+                  <span style={{ fontSize:12,color:theme.text2,textAlign:"right" }}>{item.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {/* footer */}
+        <div style={{ textAlign:"center",marginTop:28,padding:"20px",
+          background:theme.card,borderRadius:16 }}>
+          <p style={{ color:theme.text2,fontSize:12,margin:0,lineHeight:1.6 }}>
+            🤖 <strong style={{ color:theme.text }}>Kotiba AI</strong> — shaxsiy moliya va vaqtni boshqarish yordamchingiz.{"\n"}
+            Savollar uchun AI Chat ga murojaat qiling.
+          </p>
+        </div>
+      </div>
+    </Screen>
   );
 }
 
@@ -1693,8 +1978,63 @@ export default function KotibaAI() {
     </div>
   );
 
+  // VOICE COMMAND HANDLER
+  const handleVoiceCommand = (parsed, originalText) => {
+    const today = new Date().toISOString().split("T")[0];
+    const screenMap = {
+      home:"home", bosh:"home",
+      reminders:"reminders", eslatma:"reminders",
+      finance:"finance", moliya:"finance",
+      tasks:"tasks", vazifa:"tasks",
+      settings:"settings", sozlama:"settings",
+      guide:"guide", yordam:"guide", "yo'riqnoma":"guide",
+      "ai-chat":"ai-chat", chat:"ai-chat",
+    };
+
+    switch(parsed.action) {
+      case "navigate": {
+        const dest = screenMap[parsed.screen?.toLowerCase()] || parsed.screen;
+        if (dest) { setScreen(dest); showToast(`✅ ${parsed.reply || dest+" ekraniga o'tildi"}`,"success"); }
+        break;
+      }
+      case "add_task":
+        setData(d => ({...d, tasks:[...d.tasks,{
+          id:Date.now(), text:parsed.text||originalText,
+          deadline:parsed.date||today, status:"pending"
+        }]}));
+        showToast("✅ " + (parsed.reply||"Vazifa qo'shildi!"), "success");
+        setScreen("tasks");
+        break;
+      case "add_reminder":
+        setData(d => ({...d, reminders:[...d.reminders,{
+          id:Date.now(), text:parsed.text||originalText,
+          date:parsed.date||today, time:parsed.time||"09:00",
+          repeat:"1 marta", notif:"Push"
+        }]}));
+        showToast("✅ " + (parsed.reply||"Eslatma qo'shildi!"), "success");
+        setScreen("reminders");
+        break;
+      case "add_finance":
+        setData(d => ({...d, finances:[...d.finances,{
+          id:Date.now(), type:parsed.type||"expense",
+          amount:parsed.amount||0, currency:"UZS",
+          category:parsed.category||"other",
+          note:parsed.note||originalText, date:today
+        }]}));
+        showToast("✅ " + (parsed.reply||(parsed.type==="income"?"Kirim":"Chiqim")+" qo'shildi!"), "success");
+        setScreen("finance");
+        break;
+      case "query":
+        showToast("🤖 " + (parsed.reply||"AI javob bermoqda..."), "info");
+        setScreen("ai-chat");
+        break;
+      default:
+        showToast(parsed.reply||"Buyruq bajarildi ✅", "success");
+    }
+  };
+
   // MAIN APP
-  const navScreens = ["home","reminders","finance","tasks","settings"];
+  const navScreens = ["home","reminders","finance","tasks","guide","settings"];
 
   const renderScreen = () => {
     switch(screen) {
@@ -1703,6 +2043,7 @@ export default function KotibaAI() {
       case "finance":   return <FinanceScreen theme={theme} data={data} setData={setData} showToast={showToast}/>;
       case "tasks":     return <TasksScreen theme={theme} data={data} setData={setData} showToast={showToast}/>;
       case "settings":  return <SettingsScreen theme={theme} user={currentUser} onLogout={handleLogout}/>;
+      case "guide":     return <GuideScreen theme={theme}/>;
       case "ai-chat":
         return (
           <div>
@@ -1744,7 +2085,7 @@ export default function KotibaAI() {
       )}
       {showVoice&&(
         <VoiceModal theme={theme} onClose={()=>setShowVoice(false)}
-          onResult={text=>{ showToast("Ovoz qayta ishlandi!","success"); setShowVoice(false); }}/>
+          onCommand={(parsed, text)=>{ handleVoiceCommand(parsed, text); setShowVoice(false); }}/>
       )}
       {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}
     </div>

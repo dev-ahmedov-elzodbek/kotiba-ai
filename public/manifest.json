@@ -1,0 +1,20 @@
+{
+  "name": "Kotiba AI",
+  "short_name": "Kotiba",
+  "description": "Shaxsiy moliya va vaqtni boshqarish yordamchisi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F0F11",
+  "theme_color": "#FF9F0A",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "productivity"],
+  "lang": "uz"
+}
